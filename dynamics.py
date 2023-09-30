@@ -4,7 +4,8 @@ import pandas as pd
 import math
 import csv
 import dynamicsFunctions as dynF
-
+#################################################################################
+# Mallory Moxham - UBC Formula Electric - Septmber 2023
 #################################################################################
 # USER-INPUT CONSTANTS
 # TRACK FILE
@@ -33,6 +34,10 @@ single_cell_ir = None           # Ohms - CELL INTERNAL RESISTANCE
 max_CRate = None                # Max C-Rate
 cell_mass = None                # Mass of single cell
 battery_cv = None               # Specific heat capacity of battery
+# !!!
+cell_air_area = None            # m^2 - AIR COOLING SURFACE OF CELL
+cell_water_area = None          # m^2 - WATER COOLING SURFACE OF CELL
+cell_aux_factor = None          # kg/kWh - SEGMENT AUXILLARY MASS/ENERGY
 
 # MOTOR CONSTANTS
 max_motor_torque = None         # Nm - MAX MOTOR TORQUE
@@ -43,6 +48,17 @@ max_power = None                # W - MAX POWER - AS DEFINED BY USER (FOR POWER 
 max_speed_kmh = None            # km/h - MAX SPEED
 traction_speed = None           # km/h - MAX SPEED AROUND RADIUS IN TRACTION TEST
 traction_radius = None          # m - RADIUS OF TRACTION TEST
+
+# !!! 
+# THERMAL CONSTANTS
+heatsink_mass = None            # kg - TOTAL PACK HEATSINK MASS
+heatsink_cv = None              # J/C*kg - HEATSINK MATERIAL SPECIFIC HEAT
+air_temp = None            # C - CONSTANT ASSUMED AIR TEMP
+water_temp = None          # C - CONSTANT ASSUMED WATER TEMP
+air_htc = None                  # W/C*m^2 - ASSUMED CONSTANT AIR HTC
+water_htc = None                # W/C*m^2 - ASSUMED CONSTANT WATER HTC
+air_factor_m = None             # kg/kg AIR COOLING MASS PER BATTERY MASS
+water_factor_m = None           # kg/kg WATER COOLING MASS PER BATTERY MASS
 
 ######################################################################
 # This allows an external user to have control over the constants without touching the code
@@ -87,6 +103,11 @@ v_air = 0               # air velocity: m/s
 radsToRpm = 1 / (2 * math.pi) * 60    # rad/s --> rpm
 Cd = 1                  # drag coefficient
 
+# !!!
+# Pack Design Constants
+e_spec_aux_mass = 2.51 # kg/kWh of auxillary battery components
+enclosure_mass = 4.456 # kg
+
 # Efficiencies
 n_motor_arr = np.array([[0,0.86],
                         [2000,0.9],
@@ -103,10 +124,24 @@ n_motor_arr = np.array([[0,0.86],
 
 # Battery Pack - Calculated Values
 num_cells = num_series_cells * num_parallel_cells
-total_pack_ir = single_cell_ir / num_parallel_cells * num_series_cells  # ohms
-knownTotalEnergy = capacity0 * starting_voltage / 1000  # kWh
-pack_min_voltage = cell_min_voltage * num_series_cells  # V
 pack_nominal_voltage = cell_nominal_voltage * num_series_cells # V
+total_pack_ir = single_cell_ir / num_parallel_cells * num_series_cells  # ohms
+# !!! Total known energy is approximately SoC * nominal voltage * max capacity
+knownTotalEnergy = initial_SoC * capacity0 * pack_nominal_voltage / 1000  # kWh
+pack_min_voltage = cell_min_voltage * num_series_cells  # V
+
+# !!!
+# Car Mass - Calculated Values
+total_cell_mass = cell_mass*num_cells # kg
+cooled_cell_mass = total_cell_mass*(1 + air_factor_m + water_factor_m) # kg
+cell_aux_mass = cell_aux_factor*(capacity0 * pack_nominal_voltage / 1000) # kg
+mass = mass + cooled_cell_mass + cell_aux_mass + heatsink_mass # kg
+
+# !!! 
+# Thermals - Calculated Values
+battery_cooled_hc = battery_cv*cell_mass + (heatsink_mass*heatsink_cv)/num_cells # J/C
+air_tc = air_htc*cell_air_area # W/C
+water_tc = water_htc*cell_water_area # W/C
 
 # Motor
 # Motor Power Loss Constants - from excel fit of datasheet graph
@@ -238,6 +273,7 @@ maxPower = max(dataDict['P_battery'])
 # dataDict['Max Values'][2] = "Max power Used (kW)"
 dataDict['Max Values'][3] = maxPower
 print("Max Power: ", maxPower, "kW")
+print("Car Mass: " + str(mass) + " kg")
 
 # Now cut all arrays down to the correct size before inputting into a dataframe
 time_size = len(dataDict['t0'])
@@ -254,5 +290,4 @@ dfData.to_csv(outfile, index=False)
 
 # Create plots
 dynF.plotData(dataDict)
-
 print("Completed")
