@@ -1,0 +1,26 @@
+﻿PYTHON Variable,NAME,VALUE,UNITS,NOTES
+TRACK,Race Track,Sim_Endurance.csv,N/A,"Options: Sim_Endurance.csv , Motor & Track for Sim - Acceleration.csv, Spa_Francorchamps.csv, Autodromo Nazionale Monza.csv, Indianapolis Motor Speedway.csv"
+mass,Car Mass,225,kg,May change considering battery pack weight
+Af,Frontal Area,0.7,m^2,Need to verify
+mu_rr,Rolling Resistance Coefficient,0.01,,Need to verify
+n_converter,Converter Efficiency,0.9,,Need to verify
+initial_SoC,Starting SoC,100,%,Changes based on starting conditions
+starting_voltage,Starting Pack Voltage,336,V,Changes based on starting conditions
+capacity0,Starting Capacity,17.7,Ah,Changes based on starting conditions
+batteryTemp0,Initial Battery Temperature,35,C,Changes based on starting conditions
+max_capacity,Maximum Capacity,17.7,Ah,Changes based on battery selection
+cell_max_voltage,Maximum Cell Voltage,4.2,V,Changes based on battery selection
+cell_min_voltage,Minimum Cell Voltage,3,V,Changes based on battery selection
+cell_nominal_voltage,Nominal Voltage of Cell,3.7,V,Changes based on battery selection
+num_series_cells,Number of series elements,80,,Changes based on battery selection
+num_parallel_cells,Number of parallel cells,3,,Changes based on battery selection
+single_cell_ir,Single Cell Internal Resistance,0.01,Ohms,Changes based on battery selection
+max_CRate,Max Discharge C-Rate,15,C,Changes based on battery selection
+cell_mass,Single Battery Cell Mass,0.113,kg,Changes based on battery selection
+battery_cv,Battery Specific Heat Capacity,800,J/kgK,Changes based on battery selection - range from 800-1100
+max_motor_torque,Max Motor Torque,100,Nm,From motor datasheet
+max_motor_rpm,Max Motor RPM,7600,rpm,From motor datasheet
+max_power,Max Motor Power,28000,W,CAN CHANGE TO FIT REQUIREMENTS
+traction_speed,Max Speed Around Corner,31,km/h,Need to verify
+traction_radius,Radius of that corner,5,m,Need to verify
+max_speed_kmh,Max Possible Car Speed,120,kh/m,Need to verify
