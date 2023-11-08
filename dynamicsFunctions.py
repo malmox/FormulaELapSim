@@ -10,6 +10,8 @@ import csv
 # USER-INPUT CONSTANTS
 # TRACK FILE
 TRACK = None
+regen_on = None                 # True/False - Regen on or off
+numLaps = None
 
 # CAR CONSTANTS
 mass = None                     # kg - CAR MASS
@@ -48,6 +50,7 @@ max_power = None                # W - MAX POWER - AS DEFINED BY USER (FOR POWER 
 max_speed_kmh = None            # km/h - MAX SPEED
 traction_speed = None           # km/h - MAX SPEED AROUND RADIUS IN TRACTION TEST
 traction_radius = None          # m - RADIUS OF TRACTION TEST
+longitudinal_friction = None    # Coefficient of longitudinal friction
 
 # !!! 
 # THERMAL CONSTANTS
@@ -66,27 +69,32 @@ water_factor_m = None           # kg/kg WATER COOLING MASS PER BATTERY MASS
 # Open .csv and take constants as input:
 filename = "LapSimConstants.csv"
 
+# Open the file
 with open(filename, 'r', newline='') as infile:
     reader = csv.reader(infile)
     dataList = list(reader)
-    dataList.pop(0)
+    dataList.pop(0)             # Remove title row
 
     # convert to array
     dataArray = np.array(dataList)
 
     # Take out the valuable columns and convert to floats as necessary
-    value_name = dataArray[1:,0]
-    value = dataArray[1:,2]
+    value_name = dataArray[2:,0]
+    value = dataArray[2:,2]
     value = np.asarray(value, dtype = float)
 
     track_name = dataArray[0,0]
     track = dataArray[0,2]
+
+    regen_name = dataArray[1,0]
+    regen = dataArray[1,2]
 
 # Now create variables for everything
 for x, y in zip(value_name, value):
     globals()[x] = y
 
 globals()[track_name] = track
+globals()[regen_name] = regen
 
 ################################################################
 # CONSTANTS - SHOULD NOT NEED CHANGING
@@ -124,6 +132,9 @@ total_pack_ir = single_cell_ir / num_parallel_cells * num_series_cells  # ohms
 knownTotalEnergy = initial_SoC * capacity0 * pack_nominal_voltage / 1000  # kWh
 pack_min_voltage = cell_min_voltage * num_series_cells  # V
 
+# Braking Data
+brakeCsvName = str(max_power / 1000) + "kW_BrakeAndMotor_OL_22.csv"
+
 # !!!
 # Car Mass - Calculated Values
 total_cell_mass = cell_mass*num_cells # kg
@@ -136,7 +147,6 @@ mass = mass + cooled_cell_mass + cell_aux_mass + heatsink_mass # kg
 battery_cooled_hc = battery_cv*cell_mass + (heatsink_mass*heatsink_cv)/num_cells # J/C
 air_tc = air_htc*cell_air_area # W/C
 water_tc = water_htc*cell_water_area # W/C
-
 
 # Motor
 # Motor Power Loss Constants - from excel fit of datasheet graph
@@ -151,8 +161,18 @@ test_mass = 225                             # kg - car mass used in testing
 F_friction = test_mass * a_centrip          # calculate the friction force
 mu_f = F_friction / (test_mass * g)         # calculate the friction coefficient
 max_speed = max_speed_kmh / 3.6             # m/s
+max_traction_force = mass * g * longitudinal_friction   # N
 # This determines our friction force based on the evaluated car mass.
 F_friction = mu_f * mass * g
+
+# Take in braking and regen file:
+# Read .csv of braking vs distance data
+brake_df = pd.read_csv(brakeCsvName, header=[0])
+# brake_df = brake_df.drop([0,1])
+distanceTravelled = brake_df.loc[:,'elapsedDistance'].to_numpy(dtype=float)
+engine_w_vector = brake_df.loc[:,'engineSpeed'].to_numpy(dtype=float)
+engine_T_vector = brake_df.loc[:,'torque'].to_numpy(dtype=float)
+brakePosition = brake_df.loc[:,'brakePosition'].to_numpy(dtype=float)
 
 #################################################################################################
 # Here, I will input all of the functions used in my code so that the code itself gets less messy
@@ -249,6 +269,14 @@ def fastestNextSpeed(dataDict, i):
     dataDict['F_trac'][i] = dataDict['T_a'][i] / wheel_radius       # Traction force from two motors - not split between two wheels
     # NOT -> F_trac[i] = T_a[i] / (2 * wheel_radius)
 
+    # Now determine if the car is traction limited - if so, reduce torque applied to wheels.
+    if dataDict['F_trac'][i] > max_traction_force:
+        dataDict['F_trac'][i] = max_traction_force
+
+        dataDict['T_a'][i] = wheel_radius * dataDict['F_trac'][i]
+
+        dataDict['T_m'][i] = dataDict['T_a'][i] / GR
+
     # Drag force: F_drag
     dataDict['F_drag'][i] = (rho_air * Af * Cd * (dataDict['v0'][i] + v_air)**2) / 2
 
@@ -339,12 +367,14 @@ def batteryPower(dataDict, i):
     # n_transmission calculation
     n_transmission = motorEfficiency(dataDict['w_m'][i])
     
-    P_motors = P_wheel / n_transmission
-    P_motorloss = A * dataDict['w_m'][i]**2 + B * dataDict['w_m'][i] + C      # Motorloss
+    # !!!
+    P_motors = 2* P_wheel / n_transmission
+    P_motorloss = 2* A * dataDict['w_m'][i]**2 + B * dataDict['w_m'][i] + C      # Motorloss
 
     # The traction force is for BOTH motors and both wheels, but we have two motors, so twice the loss
-    P_converter = P_motors + 2 * P_motorloss
+    P_converter = P_motors + P_motorloss
     dataDict['P_battery'][i] = P_converter / n_converter
+    P_battery_debug = dataDict['P_battery'][i]
 
     return dataDict
 
@@ -373,79 +403,89 @@ def SoClookup(SoC, thisCapacity):
         else:
             return SoC[mid]      # Secondary base case
 
-# This power limiting algorithm has now become obsolete.
-# Power Limited
-# def powerLimited(dataDict, i):
-#     P_converter = dataDict["P_battery"][i] * n_converter
+# Braking Considerations
+def batteryBrakeAndRegen(dataDict, i):
+    # based on current distance, search for braking info at that distance
+    distanceIndex = np.searchsorted(distanceTravelled, dataDict['r0'][i])
+    brake = brakePosition[distanceIndex]
 
-#     # Keep w_m same, keep voltage[i] same, keep vo[i] same 
-#     # n_transmission stays same, P_motorloss stays same:
-#     n_transmission = motorEfficiency(dataDict['w_m'][i])
-#     P_motorloss = A * dataDict['w_m'][i]**2 + B * dataDict['w_m'][i] + C
+    # Now determine new battery parameters as suggested by optimum lap
+    # determine engine power at that distance
+    engine_w = engine_w_vector[distanceIndex]
+    engine_T = engine_T_vector[distanceIndex]
 
-#     # Motor power
-#     P_motors = P_converter - 2 * P_motorloss
+    P_motors = engine_w * engine_T / radsToRpm            # motor (engine) power
+    P_motorloss = A * engine_w**2 + B * engine_w + C      # Motorloss
 
-#     # Wheel power
-#     P_wheel = P_motors * n_transmission
+    # The traction force is for BOTH motors and both wheels, but we have two motors, so twice the loss
+    P_converter = P_motors + P_motorloss
+    P_battery = P_converter / n_converter
 
-#     # F_trac
-#     dataDict["F_trac"][i] = P_wheel / dataDict['v0'][i]
+    # set battery power to be zero at that point and then determine regen
+    if brake == 0:
+        dataDict['P_battery_OL'][i] = P_battery
+    else:
+        dataDict['P_battery'][i] = 0
 
-#     # F_drag same, F_RR same
-#     # F_net_tan
-#     dataDict['F_net_tan'][i] = dataDict['F_trac'][i] - (dataDict['F_drag'][i] + dataDict['F_RR'][i])
+        dataDict['P_battery_regen'][i] = -P_battery     # Note that regen will be shown as negative
 
-#     # Acceleration (tangential)
-#     dataDict['a_tan0'][i] = dataDict['F_net_tan'][i] / mass
-
-#     # Theoretical max speed - if travelling in a straight line
-#     # new velocity:
-#     dataDict['v0'][i+1] = dataDict['v0'][i] + dataDict['a_tan0'][i] * dt
-
-#     # new position:
-#     dataDict['r0'][i+1] = dataDict['r0'][i] + dataDict['v0'][i] * dt + 1/2 * dataDict['a_tan0'][i] * dt**2
-
-#     return dataDict
+    return dataDict
 
 # More battery calculations
 def batteryPackCalcs(dataDict, i):
+    # Determine pack current, but first...
 
-    # Our power limiting step will become obsolete if we change our motor curve to inherently involve the max power.
-    # Leave this in for if we want to go back or if we encounter any errors - but at the moment, those errors should never occur.
+    # Check if we are using regen
+    if regen_on == "TRUE":
+        if dataDict['P_battery'][i] == 0:
+            # Note that the effect of the total pack internal resistance is included to make the calculation more accurate
+            current = quad_formula(total_pack_ir, pack_nominal_voltage, -1 * dataDict['P_battery_regen'][i])
+            dataDict['Pack Current'][i] = max(current)      # CHECK THIS PLEASE!!
+        else:
+            # Note that the effect of the total pack internal resistance is included to make the calculation more accurate
+            current = quad_formula(total_pack_ir, pack_nominal_voltage, -1 * dataDict['P_battery'][i])
+            dataDict['Pack Current'][i] = max(current)      # ignore the negative result from the quadratic formula
+    else: 
+        # Note that the effect of the total pack internal resistance is included to make the calculation more accurate
+        current = quad_formula(total_pack_ir, pack_nominal_voltage, -1 * dataDict['P_battery'][i])
+        dataDict['Pack Current'][i] = max(current)      # ignore the negative result from the quadratic formula
+    
+    if dataDict['Pack Current'][i] > num_parallel_cells * max_CRate * max_capacity:
+        dataDict['Pack Current'][i] = num_parallel_cells * max_CRate
 
-    # # Power limit may not be more constricting than current limit - calculate limiting current
-    # current_limit = dataDict['Pack Voltage'][i] * max_capacity * max_CRate
+        dataDict['P_battery'][i] = pack_nominal_voltage * dataDict['Pack Current'][i]
 
-    # # Now power limiting algorithm
-    # if dataDict['P_battery'][i] > max_power:
-    #     dataDict['P_battery'][i] = max_power
-    #     dataDict = powerLimited(dataDict, i)
-    # # Next, power limit from current limit:
-    # elif dataDict['P_battery'][i] > current_limit * dataDict['Pack Voltage'][i]:
-    #     dataDict['P_battery'][i] = current_limit * dataDict['Pack Voltage'][i]
-    #     dataDict = powerLimited(dataDict, i)
+        P_converter = n_converter * dataDict['P_battery'][i]
 
-    # Determine pack current
-    # Note that the effect of the total pack internal resistance is included to make the calculation more accurate
-    current = quad_formula(total_pack_ir, pack_nominal_voltage, -1 * dataDict['P_battery'][i])
-    dataDict['Pack Current'][i] = max(current)      # ignore the negative result from the quadratic formula
+        P_motorloss = 2* A * dataDict['w_m'][i]**2 + B * dataDict['w_m'][i] + C      # Motorloss
+
+        P_motors = P_converter - P_motorloss
+
+        # n_transmission calculation
+        n_transmission = motorEfficiency(dataDict['w_m'][i])
+
+        P_wheel = n_transmission * P_motors / 2
+
+        dataDict['T_m'][i] = P_wheel / (dataDict['w_m'][i] / radsToRpm)
 
     # Determine Ahr lost at this current based on time interval dt
-    Ahr_lost = dataDict['Pack Current'][i] * dt / 3600
+    Ahr_difference = dataDict['Pack Current'][i] * dt / 3600
 
     # Determine new capacity
-    dataDict['Capacity'][i+1] = dataDict['Capacity'][i] - Ahr_lost
+    dataDict['Capacity'][i+1] = dataDict['Capacity'][i] - Ahr_difference
 
     # Determine new SoCc
     dataDict['SoC Capacity'][i+1] = dataDict["Capacity"][i+1] / capacity0 * 100
 
     ########################################################################
     # Simple thermal calculations
-    # P = I^2 * r
-    dataDict['Dissipated Power'][i] = (dataDict['Pack Current'][i] / num_parallel_cells)**2 * single_cell_ir
+    # P = I^2 * r - absolute of pack current to accout for regen also increasing pack temp
+    dataDict['Dissipated Power'][i] = (abs(dataDict['Pack Current'][i]) / num_parallel_cells)**2 * single_cell_ir
     
+    # Power out of cell, if applicable
     cell_p_out = (air_tc)*(dataDict['Battery Temp'][i]-air_temp) + water_tc*(dataDict['Battery Temp'][i]-water_temp)
+
+    # First temp calculations
     dataDict['Battery Temp'][i+1] = dataDict['Battery Temp'][i] + dt * (dataDict['Dissipated Power'][i] - cell_p_out) / (battery_cooled_hc)
 
     ########################################################################
@@ -515,14 +555,14 @@ def plotData(dataDict):
     fig.suptitle(supTitle)
 
     # Plot 1)
-    # Velocity vs Time
+    # Regen vs Distance
     row = 0; col = 0
     x_axis = "Distance (m)"
-    y_axis = "Velocity (km/h)"
-    plotTitle = "Car Velocity vs Distance"
+    y_axis = "Regen Power (kW)"
+    plotTitle = "Regen Power vs Distance"
     # Convert the velocity from m/s to km/h
-    dataDict['v0'] = dataDict['v0'] * 3.6
-    ax[row][col].plot(dataDict["r0"][0:700], dataDict["v0"][0:700])       # plot the data
+    # dataDict['v0'] = dataDict['v0'] * 3.6
+    ax[row][col].plot(dataDict["r0"][0:1400], dataDict["P_battery_regen"][0:1400])       # plot the data
     plotDetails(x_axis, y_axis, plotTitle, ax[row][col])  # add the detaila
 
     # Plot 2)
@@ -537,10 +577,10 @@ def plotData(dataDict):
     # Plot 3)
     # Battery power vs time with Energy use overlay
     row = 1; col = 0
-    x_axis = "Time (s)"
+    x_axis = "Distance (m)"
     y_axis = "Battery Power (kW)"
-    plotTitle = "Battery Power vs Time"
-    ax[row][col].plot(dataDict["t0"], dataDict["P_battery"])
+    plotTitle = "Battery Power vs Distance over 1 lap"
+    ax[row][col].plot(dataDict["r0"][0:1400], dataDict["P_battery"][0:1400])
     plotDetails(x_axis, y_axis, plotTitle, ax[row][col])
 
     # Plot 4)

@@ -5,11 +5,13 @@ import math
 import csv
 import dynamicsFunctions as dynF
 #################################################################################
-# Mallory Moxham - UBC Formula Electric - Septmber 2023
+# Mallory Moxham - UBC Formula Electric - September 2023
 #################################################################################
 # USER-INPUT CONSTANTS
 # TRACK FILE
 TRACK = None
+regen_on = None                 # Regen on - True or False
+numLaps = None
 
 # CAR CONSTANTS
 mass = None                     # kg - CAR MASS
@@ -48,6 +50,7 @@ max_power = None                # W - MAX POWER - AS DEFINED BY USER (FOR POWER 
 max_speed_kmh = None            # km/h - MAX SPEED
 traction_speed = None           # km/h - MAX SPEED AROUND RADIUS IN TRACTION TEST
 traction_radius = None          # m - RADIUS OF TRACTION TEST
+longitudinal_friction = None    # Coefficient of longitudinal friction
 
 # !!! 
 # THERMAL CONSTANTS
@@ -76,18 +79,22 @@ with open(filename, 'r', newline='') as infile:
     dataArray = np.array(dataList)
 
     # Take out the valuable columns and convert to floats as necessary
-    value_name = dataArray[1:,0]
-    value = dataArray[1:,2]
+    value_name = dataArray[2:,0]
+    value = dataArray[2:,2]
     value = np.asarray(value, dtype = float)
 
     track_name = dataArray[0,0]
     track = dataArray[0,2]
+
+    regen_name = dataArray[1,0]
+    regen = dataArray[1,2]
 
 # Now create variables for everything
 for x, y in zip(value_name, value):
     globals()[x] = y
 
 globals()[track_name] = track
+globals()[regen_name] = regen
 
 ################################################################
 # CONSTANTS - SHOULD NOT NEED CHANGING
@@ -130,6 +137,9 @@ total_pack_ir = single_cell_ir / num_parallel_cells * num_series_cells  # ohms
 knownTotalEnergy = initial_SoC * capacity0 * pack_nominal_voltage / 1000  # kWh
 pack_min_voltage = cell_min_voltage * num_series_cells  # V
 
+# Braking Data
+brakeCsvName = str(max_power / 1000) + "kW_BrakeAndMotor_OL_22.csv"
+
 # !!!
 # Car Mass - Calculated Values
 total_cell_mass = cell_mass*num_cells # kg
@@ -156,6 +166,7 @@ test_mass = 225                             # kg - car mass used in testing
 F_friction = test_mass * a_centrip          # calculate the friction force
 mu_f = F_friction / (test_mass * g)         # calculate the friction coefficient
 max_speed = max_speed_kmh / 3.6             # m/s
+max_traction_force = mass * g * longitudinal_friction   # N
 # This determines our friction force based on the evaluated car mass.
 F_friction = mu_f * mass * g
 
@@ -170,6 +181,15 @@ trackRadius = track_df.loc[:,'Radius'].to_numpy()                   # create vec
 
 # Create the motor torque curve
 motor_torque, motor_rpm = dynF.motorTorqueCurve()
+
+# Take in braking and regen file:
+# Read .csv of braking vs distance data
+brake_df = pd.read_csv(brakeCsvName, header=[0])
+# brake_df = brake_df.drop([0,1])
+distanceTravelled = brake_df.loc[:,'elapsedDistance'].to_numpy(dtype=float)
+engine_w_vector = brake_df.loc[:,'engineSpeed'].to_numpy(dtype=float)
+engine_T_vector = brake_df.loc[:,'torque'].to_numpy(dtype=float)
+brakePosition = brake_df.loc[:,'brakePosition'].to_numpy(dtype=float)
 
 # Vectors for each set of data
 # Create a dictionary of values
@@ -187,10 +207,12 @@ headers = ['v0',                    # velocity vector (m/s)
            "a_tan0",                # tangential acceleration (m/s^2)
            "a_norm0",               # normal/centripetal acceleration (m/s^2)
            "P_battery",             # battery power (kW)
+           "P_battery_OL",          # Optimum Lap battery power (kW)
+           "P_battery_regen",       # battery regen power (kW)
            "Capacity",              # Battery capacity (Ah)
-           "Pack Voltage",          # battery pack voltage (V)
            "Pack Current",          # Battery pack current (A)
            "Energy Use",            # energy use over time (kWh)
+           "Energy Use OL",         # energy use as per Optimum lap (kWh)
            "SoC Energy",            # state of charge - energy based (%)
            "SoC Capacity",          # state of charge - capacity based (%)
            "Dissipated Power",      # Power dissipated from batteries due to internal resistance (W)
@@ -207,7 +229,6 @@ for i in range(0, len(headers)):
 # Add some starting values
 dataDict['Capacity'][0] = capacity0
 dataDict['SoC Capacity'][0] = initial_SoC
-dataDict['Pack Voltage'][0] = starting_voltage
 dataDict['Battery Temp'][0] = batteryTemp0
 
 # CALCULATIONS
@@ -246,7 +267,13 @@ for i in range(0,num-1):
         dataDict['P_battery'][i] = 0
 
     ###########################################
-    # Add the further battery calcs here
+    
+    # Add the braking
+    dataDict = dynF.batteryBrakeAndRegen(dataDict, i)
+
+    ###########################################
+    # Add the further battery calcs here:
+    # For my simulation battery power
     dataDict = dynF.batteryPackCalcs(dataDict, i)
 
     ###########################################
@@ -259,26 +286,43 @@ for i in range(0,num-1):
 energy, totalEnergy = dynF.trapezoidApprox(dataDict['P_battery'])
 dataDict['Energy Use'] = energy
 
-# dataDict['Max Values'][0] = "Total Energy Used (kWh)"
+OLenergy, OLTotalEnergy = dynF.trapezoidApprox(dataDict['P_battery_OL'])
+dataDict['Energy Use OL'] = OLenergy
+
 dataDict['Max Values'][1] = totalEnergy
-print('Energy Used: ', totalEnergy, 'kWh')
+print('Energy Used (This Sim): ', totalEnergy, 'kWh')
+print('Energy Used (Optimum Lap): ', OLTotalEnergy, 'kWh')
 
 # Determine SoCe based on this!
 dataDict = dynF.SoCenergy(dataDict, knownTotalEnergy)
 
 # Determination of maximum power
 dataDict['P_battery'] = dataDict['P_battery'] / 1000        # convert to kW
+dataDict['P_battery_OL'] = dataDict['P_battery_OL'] / 1000
+dataDict['P_battery_regen'] = dataDict['P_battery_regen'] / 1000
 maxPower = max(dataDict['P_battery'])
+OLMaxPower = max(dataDict['P_battery_OL'])
+averagePower = np.mean(dataDict['P_battery'])
+averageOLPower = np.mean(dataDict['P_battery_OL'])
 
 # dataDict['Max Values'][2] = "Max power Used (kW)"
 dataDict['Max Values'][3] = maxPower
-print("Max Power: ", maxPower, "kW")
+print("Max Power (This Sim): ", maxPower, "kW")
+print("Max Power (Optimum Lap): ", OLMaxPower, "kW")
+print("Avg Power (This Sim): ", averagePower, "kW")
+print("Avg Power (Optimum Lap): ", averageOLPower, "kW")
 print("Car Mass: " + str(mass) + " kg")
 
 # Now cut all arrays down to the correct size before inputting into a dataframe
 time_size = len(dataDict['t0'])
 for i in range(0, len(headers)):
     dataDict[headers[i]] = dataDict[headers[i]][:time_size]
+
+# Additional Outputs
+dataDict['v0'] = dataDict['v0'] * 3.6            # convert to km/h
+print("Total Time: ", dataDict['t0'][-1], "s")
+print("Lap Time: ", dataDict['t0'][-1] / numLaps, "s")
+print("Final SoC(c): ", dataDict['SoC Capacity'][-1], "%")
 
 # Now I want to write all the columns to a dictionary and then input it into a dataframe - since it's easier to do column-wise
 dfData = pd.DataFrame(dataDict)
